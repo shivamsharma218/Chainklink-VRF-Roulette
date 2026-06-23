@@ -42,6 +42,9 @@ contract Roulette is VRFConsumerBaseV2Plus, ReentrancyGuard {
     uint256 public houseEdgeBps = 250; // 2.5%
     address public houseWallet;
     uint256 public houseProfit;
+    uint256 public constant MAX_BETS = 100;
+    uint256 public maxBetAmount = 1 ether; // default
+uint256 public constant MAX_PAYOUT_MULTIPLIER = 35; // green pays 35x
 
     Bet[] public bets;
     mapping(address => uint256) public winnings;
@@ -84,19 +87,26 @@ contract Roulette is VRFConsumerBaseV2Plus, ReentrancyGuard {
         emit RoundStarted(roundId);
     }
 
-    function placeBet(Color _color) external payable {
-        require(phase == RoundPhase.Open, "Betting closed");
-        require(msg.value > 0, "Zero bet");
 
-        uint256 edge = (msg.value * houseEdgeBps) / 10000;
-        uint256 netAmount = msg.value - edge;
-        houseProfit += edge;
 
-       
-        bets.push(Bet(msg.sender, netAmount, _color));
 
-        emit BetPlaced(roundId, msg.sender, netAmount, _color);
-    }
+function placeBet(Color _color) external payable {
+    require(phase == RoundPhase.Open, "Betting closed");
+    require(msg.value > 0, "Zero bet");
+    require(bets.length < MAX_BETS, "Bet limit reached");
+
+   
+    uint256 dynamicMax = address(this).balance / MAX_PAYOUT_MULTIPLIER;
+    uint256 effectiveMax = dynamicMax < maxBetAmount ? dynamicMax : maxBetAmount;
+    require(msg.value <= effectiveMax, "Bet exceeds max limit");
+
+    uint256 edge = (msg.value * houseEdgeBps) / 10000;
+    uint256 netAmount = msg.value - edge;
+    houseProfit += edge;
+
+    bets.push(Bet(msg.sender, netAmount, _color));
+    emit BetPlaced(roundId, msg.sender, netAmount, _color);
+}
 
    
     function closeBettingAndRequestRandomness() external onlyOwner {
@@ -144,26 +154,22 @@ contract Roulette is VRFConsumerBaseV2Plus, ReentrancyGuard {
     }
 
     function _payoutWinners() internal returns (uint256 totalPayout) {
-        Color winningColor = getWinningColor(winningNumber);
-        uint256 len = bets.length;
-
-        for (uint256 i = 0; i < len; i++) {
-            Bet memory bet = bets[i];
-            if (_isWinningBet(bet.color, winningColor)) {
-                totalPayout += bet.amount * multiplier[bet.color];
-            }
-        }
-
-        require(address(this).balance >= totalPayout, "Insufficient liquidity");
+    Color winningColor = getWinningColor(winningNumber);
+    uint256 len = bets.length;
 
    
-        for (uint256 i = 0; i < len; i++) {
-            Bet memory bet = bets[i];
-            if (_isWinningBet(bet.color, winningColor)) {
-                winnings[bet.player] += bet.amount * multiplier[bet.color];
-            }
+    for (uint256 i = 0; i < len; i++) {
+        Bet memory bet = bets[i];
+        if (_isWinningBet(bet.color, winningColor)) {
+            uint256 payout = bet.amount * multiplier[bet.color];
+            winnings[bet.player] += payout;
+            totalPayout += payout;
         }
     }
+
+    
+    require(address(this).balance >= totalPayout, "Insufficient liquidity");
+}
 
     function _isWinningBet(Color betColor, Color winningColor) internal pure returns (bool) {
         if (winningColor == Color.Green) {
